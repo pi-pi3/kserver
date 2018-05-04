@@ -4,6 +4,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.InetAddress;
 import java.net.UnknownHostException;
+import java.net.SocketTimeoutException;
 
 import java.io.File;
 import java.io.FileReader;
@@ -11,7 +12,6 @@ import java.io.FileWriter;
 import java.io.BufferedReader;
 import java.io.BufferedWriter;
 import java.io.InputStreamReader;
-import java.io.DataOutputStream;
 import java.io.IOException;
 
 import java.util.Collection;
@@ -32,147 +32,99 @@ import java.util.regex.Pattern;
 
 public class KlausurenServer {
     private static final String DB_PATH = "db_klausuren";
+    private static final int SO_TIMEOUT = 2000;
+    private static final long THREAD_TIMEOUT = 100l;
 
-    private String host;
     private int portno;
 
-    private boolean running;
+    private Boolean running;
     private ServerSocket socket;
     private Map<String, TreeSet<Integer>> db;
     private File dbFile;
 
-    private Pattern commandPat;
-    private Pattern keyPat;
-    private Pattern valuePat;
-    private Pattern splitPat;
+    private Object lock = new Object();
 
     public KlausurenServer(int portno) {
-        this("127.0.0.1", portno);
-    }
-
-    public KlausurenServer(String host, int portno) {
-        this.host = host;
         this.portno = portno;
-
-        int flags = Pattern.CASE_INSENSITIVE;
-        this.commandPat = Pattern.compile("put|get|del|getall|stop", flags);
-        this.keyPat = Pattern.compile(".+@.+");
-        this.valuePat = Pattern.compile("\\d+(?:, *\\d+)*");
-        this.splitPat = Pattern.compile(", *");
+        this.running = false;
     }
 
-    public synchronized Response put(Scanner sc) {
+    public boolean isRunning() {
+        synchronized (this.running) {
+            return this.running;
+        }
+    }
+
+    public Response put(String key, List<Integer> values) {
         Collection<?> response = null;
 
-        String key = sc.next(this.keyPat);
-        String value = sc.findInLine(this.valuePat);
-        List<Integer> values = Arrays.stream(this.splitPat.split(value))
-            .map(Integer::parseInt)
-            .collect(Collectors.toList());
-        if (this.db.containsKey(key)) {
-            TreeSet<Integer> oldset = this.db.get(key);
-            response = oldset;
-        }
+        synchronized (this.db) {
+            if (this.db.containsKey(key)) {
+                TreeSet<Integer> oldset = this.db.get(key);
+                response = oldset;
+            }
 
-        TreeSet<Integer> newset = new TreeSet<>();
-        newset.addAll(values);
-        this.db.put(key, newset);
+            TreeSet<Integer> newset = new TreeSet<>();
+            newset.addAll(values);
+            this.db.put(key, newset);
+        }
 
         return new Response(true, response);
     }
 
-    public Response get(Scanner sc) {
-        String key = sc.next(this.keyPat);
-        return new Response(this.db.get(key));
+    public Response get(String key) {
+        synchronized (this.db) {
+            return new Response(this.db.get(key));
+        }
     }
 
-    public synchronized Response del(Scanner sc) {
-        String key = sc.next(this.keyPat);
-        return new Response(this.db.remove(key));
+    public Response del(String key) {
+        synchronized (this.db) {
+            return new Response(this.db.remove(key));
+        }
     }
 
-    public Response getall(Scanner sc) {
+    public Response getall() {
         List<TreeSet<Integer>> union = new ArrayList<>();
 
-        for (TreeSet<Integer> set : this.db.values()) {
-            boolean contained = union.stream()
-                .anyMatch((TreeSet<Integer> s) -> s.containsAll(set));
+        synchronized (this.db) {
+            for (TreeSet<Integer> set : this.db.values()) {
+                boolean contained = union.stream()
+                    .anyMatch((TreeSet<Integer> s) -> s.containsAll(set));
 
-            if (!contained) {
-                union.add(set);
+                if (!contained) {
+                    union.add(set);
+                }
             }
         }
 
         return new Response(union);
     }
 
-    public synchronized Response stop() {
-        this.running = false;
+    public Response stop() {
+        synchronized (this.running) {
+            this.running = false;
+        }
         return new Response(true);
     }
 
-    public Response exec(String line) {
-        Response resp = Response.FAILURE;
-
-        Scanner sc = new Scanner(line);
-        try {
-            String command = sc.next(this.commandPat).toLowerCase();
-
-            switch (command) {
-                case "put":
-                    resp = this.put(sc);
-                    break;
-                case "get":
-                    resp = this.get(sc);
-                    break;
-                case "del":
-                    resp = this.del(sc);
-                    break;
-                case "getall":
-                    resp = this.getall(sc);
-                    break;
-                case "stop":
-                    resp = this.stop();
-                    break;
-            }
-        } catch (NoSuchElementException e) {
-            // invalid command
-            // e.printStackTrace();
-            return Response.FAILURE;
-        }
-
-        if (sc.hasNext()) {
-            // invalid command
-            return Response.FAILURE;
-        }
-
-        return resp;
-    }
-
     public void load() throws IOException {
-        this.load(this.dbFile);
-    }
-
-    public synchronized void load(File db) throws IOException {
-        BufferedReader r = new BufferedReader(new FileReader(db));
+        BufferedReader r = new BufferedReader(new FileReader(this.dbFile));
 
         String line;
         while ((line = r.readLine()) != null) {
-            Scanner sc = new Scanner(line);
-            this.put(sc);
+            Handler phantom = new Handler(this);
+            phantom.exec(line);
         }
 
         r.close();
     }
 
     public void save() throws IOException {
-        this.save(this.dbFile);
-    }
-
-    public synchronized void save(File db) throws IOException {
-        BufferedWriter w = new BufferedWriter(new FileWriter(db));
+        BufferedWriter w = new BufferedWriter(new FileWriter(this.dbFile));
 
         for (Map.Entry<String, TreeSet<Integer>> e : this.db.entrySet()) {
+            w.write("put ");
             w.write(e.getKey());
             w.write(' ');
             String values = e.getValue()
@@ -186,51 +138,50 @@ public class KlausurenServer {
         w.close();
     }
 
-    public synchronized void start() throws UnknownHostException, IOException {
-        this.db = new HashMap<>();
-        this.dbFile = new File(DB_PATH);
-        if (this.dbFile.exists()) {
-            this.load();
-        } else {
-            this.dbFile.createNewFile();
-        }
+    public void start() throws IOException {
+        synchronized (this.lock) {
+            this.db = new HashMap<>();
+            this.dbFile = new File(DB_PATH);
 
-        InetAddress addr;
-
-        try {
-            addr = InetAddress.getByName(this.host);
-        } catch (UnknownHostException e) {
-            throw e;
-        }
-
-        try {
-            this.socket = new ServerSocket(this.portno, 0, addr);
-        } catch (IOException e) {
-            throw e;
-        }
-
-        this.running = true;
-        while (this.running) {
-            try {
-                Socket conn = this.socket.accept();
-                BufferedReader in = new BufferedReader(new InputStreamReader(conn.getInputStream()));
-                DataOutputStream out = new DataOutputStream(conn.getOutputStream());
-
-                String line = in.readLine();
-                if (line != null) {
-                    Response resp = this.exec(line);
-                    out.writeBytes(resp.toString());
-                }
-
-                in.close();
-                out.close();
-                conn.close();
-            } catch (IOException e) {
-                e.printStackTrace();
+            if (this.dbFile.exists()) {
+                this.load();
+            } else {
+                this.dbFile.createNewFile();
             }
-        }
 
-        this.save();
-        this.socket.close();
+            this.socket = new ServerSocket(this.portno);
+            this.socket.setSoTimeout(SO_TIMEOUT);
+
+            List<Thread> threads = new ArrayList<>();
+            this.running = true;
+
+            while (this.isRunning()) {
+                try {
+                    Socket conn;
+                    try {
+                        conn = this.socket.accept();
+                    } catch (SocketTimeoutException e) {
+                        // ignore
+                        continue;
+                    }
+                    Thread handler = new Thread(new Handler(this, conn));
+                    handler.start();
+                    threads.add(handler);
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            for (Thread handler : threads) {
+                try {
+                    handler.join(THREAD_TIMEOUT);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+
+            this.save();
+            this.socket.close();
+        }
     }
 }

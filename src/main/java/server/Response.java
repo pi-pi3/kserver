@@ -13,23 +13,29 @@ public class Response {
         this(success, null);
     }
 
-    public Response(Collection<?> response) {
-        this(response != null && !response.isEmpty(), response);
-    }
-
-    public Response(boolean success, Collection<?> response) {
-        this.success = success;
-        if (success && response != null) {
-            this.response = response.stream()
-                .map(Object::toString)
-                .collect(Collectors.joining(","));
+    public Response(Object response) {
+        boolean isEmpty = response == null;
+        if (!isEmpty && response instanceof Collection<?>) {
+            isEmpty = ((Collection<?>) response).isEmpty();
         }
+        this.init(!isEmpty, response);
     }
 
     public Response(boolean success, Object response) {
+        this.init(success, response);
+    }
+
+    private void init(boolean success, Object response) {
         this.success = success;
         if (success && response != null) {
-            this.response = response.toString();
+            if (response instanceof Collection<?>) {
+                Collection<?> values = (Collection<?>) response;
+                this.response = values.stream()
+                    .map(Object::toString)
+                    .collect(Collectors.joining(","));
+            } else {
+                this.response = response.toString();
+            }
         }
     }
 

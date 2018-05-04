@@ -32,12 +32,9 @@ public class App {
         KlausurenServer sv = new KlausurenServer(portno);
         try {
             sv.start();
-        } catch (UnknownHostException e) {
-            e.printStackTrace();
-            System.exit(3);
         } catch (IOException e) {
             e.printStackTrace();
-            System.exit(4);
+            System.exit(3);
         }
     }
 }
