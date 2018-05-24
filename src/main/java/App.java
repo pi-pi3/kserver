@@ -6,7 +6,7 @@ import server.KlausurenServer;
 
 public class App {
     public static void usage(String arg0) {
-        System.out.println("usage: " + arg0 + " PORT");
+        System.out.println("usage: " + arg0 + " [PORT]");
     }
 
     public static void main(String[] args) {
@@ -15,7 +15,7 @@ public class App {
 
         if (args.length < 2) {
             port = new Scanner(System.in).nextLine().trim();
-        } else if(!args[1].equals("-h")) {
+        } else if (!args[1].equals("-h")) {
             port = args[1];
         } else {
             App.usage(args[0]);
@@ -25,7 +25,8 @@ public class App {
         try {
             portno = Integer.parseInt(port);
         } catch (NumberFormatException e) {
-            e.printStackTrace();
+            System.out.println("PORT must be a number, got: " + port);
+            App.usage(args[0]);
             System.exit(2);
         }
 
