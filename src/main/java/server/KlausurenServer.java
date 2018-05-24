@@ -42,7 +42,7 @@ public class KlausurenServer {
     private Map<String, TreeSet<Integer>> db;
     private File dbFile;
 
-    private Object lock = new Object();
+    private Object runLock = new Object();
 
     public KlausurenServer(int portno) {
         this.portno = portno;
@@ -112,9 +112,9 @@ public class KlausurenServer {
         BufferedReader r = new BufferedReader(new FileReader(this.dbFile));
 
         String line;
+        Interpreter interp = new Interpreter(this);
         while ((line = r.readLine()) != null) {
-            Handler phantom = new Handler(this);
-            phantom.exec(line);
+            interp.exec("put " + line);
         }
 
         r.close();
@@ -123,23 +123,24 @@ public class KlausurenServer {
     public void save() throws IOException {
         BufferedWriter w = new BufferedWriter(new FileWriter(this.dbFile));
 
-        for (Map.Entry<String, TreeSet<Integer>> e : this.db.entrySet()) {
-            w.write("put ");
-            w.write(e.getKey());
-            w.write(' ');
-            String values = e.getValue()
-                .stream()
-                .map((Integer i) -> String.valueOf(i))
-                .collect(Collectors.joining(","));
-            w.write(values);
-            w.write('\n');
+        synchronized (this.db) {
+            for (Map.Entry<String, TreeSet<Integer>> e : this.db.entrySet()) {
+                w.write(e.getKey());
+                w.write(' ');
+                String values = e.getValue()
+                    .stream()
+                    .map((Integer i) -> String.valueOf(i))
+                    .collect(Collectors.joining(","));
+                w.write(values);
+                w.write('\n');
+            }
         }
 
         w.close();
     }
 
     public void start() throws IOException {
-        synchronized (this.lock) {
+        synchronized (this.runLock) {
             this.db = new HashMap<>();
             this.dbFile = new File(DB_PATH);
 
@@ -157,16 +158,12 @@ public class KlausurenServer {
 
             while (this.isRunning()) {
                 try {
-                    Socket conn;
-                    try {
-                        conn = this.socket.accept();
-                    } catch (SocketTimeoutException e) {
-                        // ignore
-                        continue;
-                    }
+                    Socket conn = this.socket.accept();
                     Thread handler = new Thread(new Handler(this, conn));
                     handler.start();
                     threads.add(handler);
+                } catch (SocketTimeoutException e) {
+                    // ignore & continue
                 } catch (IOException e) {
                     e.printStackTrace();
                 }
